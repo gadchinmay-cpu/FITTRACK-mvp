@@ -40,6 +40,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS memberships(id INTEGER PRIMARY KEY, member_id INTEGER NOT NULL REFERENCES members(id), plan_id INTEGER NOT NULL REFERENCES membership_plans(id), start_date TEXT NOT NULL, expiry_date TEXT NOT NULL, total_price REAL NOT NULL, created_at TEXT, updated_at TEXT);
     CREATE TABLE IF NOT EXISTS payments(id INTEGER PRIMARY KEY, member_id INTEGER NOT NULL REFERENCES members(id), membership_id INTEGER REFERENCES memberships(id), amount REAL NOT NULL CHECK(amount > 0), payment_date TEXT NOT NULL, payment_method TEXT NOT NULL, transaction_reference TEXT, notes TEXT, created_by INTEGER REFERENCES users(id), created_at TEXT);
     CREATE TABLE IF NOT EXISTS activity_logs(id INTEGER PRIMARY KEY, user_id INTEGER, action TEXT, entity_type TEXT, entity_id INTEGER, description TEXT, created_at TEXT);
+    CREATE TABLE IF NOT EXISTS revoked_tokens(jti TEXT PRIMARY KEY, revoked_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS idx_members_search ON members(member_id, phone, full_name); CREATE INDEX IF NOT EXISTS idx_memberships_expiry ON memberships(expiry_date); CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(payment_date);
     """)
     user = db.execute("SELECT id FROM users WHERE email=?", (ADMIN_EMAIL,)).fetchone()
@@ -58,6 +60,9 @@ def init_db():
             price=[1500,4000,7000,12000][plan_id-1]; mc=db.execute("INSERT INTO memberships(member_id,plan_id,start_date,expiry_date,total_price,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(c.lastrowid,plan_id,start.isoformat(),expiry.isoformat(),price,created,created))
             if i%3!=0: db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,created_at) VALUES(?,?,?,?,?,?)",(c.lastrowid,mc.lastrowid,price if i%2 else price/2,(today()-timedelta(days=i)).isoformat(),("UPI" if i%2 else "Cash"),created))
             db.execute("INSERT INTO activity_logs(action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?)",("created","member",c.lastrowid,f"New member {name}",created))
+    if db.execute("SELECT COUNT(*) c FROM settings").fetchone()[0] == 0:
+        for key, value in [("gym_name","IronCore Fitness"),("gym_phone","+91 98765 43210"),("gym_address","Mumbai, Maharashtra"),("currency","INR")]:
+            db.execute("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?)", (key,value,now()))
     db.commit(); db.close()
 
 app = FastAPI(title="IronCore Gym Management")
@@ -72,10 +77,14 @@ class PaymentIn(BaseModel): amount: float = Field(gt=0); payment_date: str; paym
 
 def auth(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "): raise HTTPException(401, "Authentication required")
-    try: return jwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"])
+    try:
+        payload=jwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"])
+        db=conn(); revoked=db.execute("SELECT 1 FROM revoked_tokens WHERE jti=?",(payload.get("jti"),)).fetchone(); db.close()
+        if revoked: raise HTTPException(401,"Session has been logged out")
+        return payload
     except jwt.PyJWTError: raise HTTPException(401, "Invalid or expired session")
 
-def token(user): return jwt.encode({"sub":str(user["id"]),"email":user["email"],"role":user["role"],"exp":datetime.now(IST)+timedelta(hours=8)}, JWT_SECRET, algorithm="HS256")
+def token(user): return jwt.encode({"sub":str(user["id"]),"jti":secrets.token_urlsafe(18),"email":user["email"],"role":user["role"],"exp":datetime.now(IST)+timedelta(hours=8)}, JWT_SECRET, algorithm="HS256")
 def member_view(db, m):
     latest=db.execute("SELECT * FROM memberships WHERE member_id=? ORDER BY expiry_date DESC LIMIT 1",(m["id"],)).fetchone()
     if not latest: return {**m,"status":"NO MEMBERSHIP","days_remaining":None,"total_price":0,"paid":0,"pending":0}
@@ -91,7 +100,8 @@ def login(data: Login):
 @api.get("/auth/me")
 def me(user=Depends(auth)): return user
 @api.post("/auth/logout")
-def logout(user=Depends(auth)): return {"message":"Logged out"}
+def logout(authorization: Optional[str] = Header(None), user=Depends(auth)):
+    payload=jwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"]); db=conn(); db.execute("INSERT OR IGNORE INTO revoked_tokens(jti,revoked_at) VALUES(?,?)",(payload["jti"],now())); db.commit(); db.close(); return {"message":"Logged out"}
 
 @api.get("/dashboard")
 def dashboard(user=Depends(auth)):
@@ -140,6 +150,16 @@ def expiring(filter:str="30",user=Depends(auth)):
 @api.get("/reports")
 def reports(user=Depends(auth)):
     db=conn(); payments=rows(db.execute("SELECT payment_method, COUNT(*) count, SUM(amount) total FROM payments GROUP BY payment_method")); monthly=rows(db.execute("SELECT substr(payment_date,1,7) month,SUM(amount) total,COUNT(*) count FROM payments GROUP BY month ORDER BY month DESC LIMIT 12")); total=db.execute("SELECT COALESCE(SUM(amount),0) v FROM payments").fetchone()["v"]; db.close(); return {"total_revenue":total,"payments":payments,"monthly":monthly}
+
+@api.get("/settings")
+def get_settings(user=Depends(auth)):
+    db=conn(); result={x["key"]:x["value"] for x in rows(db.execute("SELECT key,value FROM settings"))}; db.close(); return result
+@api.put("/settings")
+def update_settings(data: dict, user=Depends(auth)):
+    db=conn()
+    for key in ("gym_name","gym_phone","gym_address","currency"):
+        if key in data and str(data[key]).strip(): db.execute("INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(key,str(data[key]).strip(),now()))
+    db.commit(); result={x["key"]:x["value"] for x in rows(db.execute("SELECT key,value FROM settings"))}; db.close(); return result
 
 app.include_router(api)
 @app.on_event("startup")
