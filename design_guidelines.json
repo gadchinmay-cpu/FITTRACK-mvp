@@ -1,0 +1,52 @@
+{
+  "app_name": "IronCore Gym Management System",
+  "context": "Dashboards & Admin Panels",
+  "archetype": "The Performance Pro (Elite Athleticism & Precision)",
+  "color_palette": {
+    "primary": "#FF3B30",
+    "primary_hover": "#E0342B",
+    "background_deep": "#0A0A0A",
+    "surface_card": "#141414",
+    "surface_card_hover": "#1A1A1A",
+    "border_color": "#262626",
+    "text_main": "#F5F5F7",
+    "text_muted": "#A1A1AA",
+    "accent_volt": "#007AFF",
+    "success": "#34C759",
+    "warning": "#FF9500",
+    "danger": "#FF3B30"
+  },
+  "typography": {
+    "heading_font": "Barlow Condensed, sans-serif",
+    "body_font": "Inter, sans-serif",
+    "weights": {
+      "light": 300,
+      "regular": 400,
+      "medium": 500,
+      "semibold": 600,
+      "bold": 700,
+      "black": 900
+    }
+  },
+  "layout_strategy": {
+    "grid_mode": "High Density Grid (Dashboards / Analytics)",
+    "gap": "gap-5",
+    "border_radius": "rounded-lg"
+  },
+  "components_to_use": [
+    "Shadcn UI cards, tables, dialogs, dropdowns, tabs, input, select, badge, button, sonner toast",
+    "Lucide React Icons",
+    "Recharts for financial revenue and membership distribution charts"
+  ],
+  "image_urls": {
+    "gym_hero_bg": "https://images.unsplash.com/photo-1778828494354-9b717d36dc99?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBneW0lMjBpbnRlcmlvciUyMGZpdG5lc3MlMjBlcXVpcG1lbnR8ZW58MHx8fHwxNzkwMDYxODE5fDA&ixlib=rb-4.1.0&q=85",
+    "gym_equipment_action": "https://images.unsplash.com/photo-1671970922029-0430d2ae122c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBneW0lMjBpbnRlcmlvciUyMGZpdG5lc3MlMjBlcXVpcG1lbnR8ZW58MHx8fHwxNzkwMDYxODE5fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": "Build a production-ready gym management dashboard with admin auth, dynamic members CRUD, membership plans, automated IST expiry alerts, payment processing with history, financial reports, settings, and robust local/session persistence with seeded demo data in ₹ INR and Asia/Kolkata timezone. Ensure all interactive items have data-testid attributes.",
+  "universal_guidelines": [
+    "Use 2-3x generous spacing",
+    "Never use pure black or pure white without tint",
+    "All interactive elements require hover and focus states with clear contrast",
+    "Include data-testid on all interactive elements"
+  ]
+}
