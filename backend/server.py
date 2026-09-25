@@ -3,6 +3,7 @@ from pathlib import Path
 load_dotenv(Path(__file__).parent / ".env")
 
 import os, sqlite3, secrets
+from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -30,6 +31,11 @@ def rows(cur): return [dict(r) for r in cur.fetchall()]
 def status_for(expiry):
     days = (date.fromisoformat(expiry) - today()).days
     return ("EXPIRED" if days < 0 else "EXPIRING SOON" if days <= 7 else "ACTIVE"), days
+
+def add_months(d: date, months: int) -> date:
+    y = d.year + (d.month - 1 + months) // 12
+    m = (d.month - 1 + months) % 12 + 1
+    return d.replace(year=y, month=m, day=min(d.day, monthrange(y, m)[1]))
 
 def init_db():
     db = conn()
@@ -71,6 +77,7 @@ api = APIRouter(prefix="/api")
 
 class Login(BaseModel): email: str; password: str
 class MemberIn(BaseModel): full_name: str; phone: str = Field(min_length=10); email: Optional[EmailStr]=None; date_of_birth: Optional[str]=None; gender: Optional[str]=None; address: Optional[str]=None; joining_date: str; emergency_contact: Optional[str]=None; trainer: Optional[str]=None; notes: Optional[str]=None
+class MemberCreateIn(MemberIn): plan_id: Optional[int]=None; total_price: Optional[float]=Field(default=None, ge=0); expiry_date: Optional[str]=None; paid_now: Optional[float]=Field(default=None, ge=0); payment_method: Optional[str]=None
 class PlanIn(BaseModel): name: str; duration_months: int = Field(gt=0, le=60); price: float = Field(ge=0); description: Optional[str]=None; is_active: bool=True
 class MembershipIn(BaseModel): plan_id: int; start_date: str; total_price: Optional[float]=None
 class PaymentIn(BaseModel): amount: float = Field(gt=0); payment_date: str; payment_method: str; transaction_reference: Optional[str]=None; notes: Optional[str]=None
@@ -116,8 +123,36 @@ def list_members(q: str="", status: str="all", user=Depends(auth)):
     if status!="all": data=[m for m in data if m["status"]==status]
     return data
 @api.post("/members")
-def create_member(data: MemberIn, user=Depends(auth)):
-    db=conn(); mid="GYM-"+secrets.token_hex(3).upper(); cur=db.execute("INSERT INTO members(member_id,full_name,phone,email,date_of_birth,gender,address,joining_date,emergency_contact,trainer,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(mid,*data.model_dump().values(),now(),now())); db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"created","member",cur.lastrowid,f"New member {data.full_name}",now())); db.commit(); out=member_view(db,db.execute("SELECT * FROM members WHERE id=?",(cur.lastrowid,)).fetchone()); db.close(); return out
+def create_member(data: MemberCreateIn, user=Depends(auth)):
+    db=conn()
+    try:
+        mid="GYM-"+secrets.token_hex(3).upper()
+        base = {k: getattr(data, k) for k in ("full_name","phone","email","date_of_birth","gender","address","joining_date","emergency_contact","trainer","notes")}
+        cur=db.execute("INSERT INTO members(member_id,full_name,phone,email,date_of_birth,gender,address,joining_date,emergency_contact,trainer,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",(mid,*base.values(),now(),now()))
+        member_row_id = cur.lastrowid
+        db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"created","member",member_row_id,f"New member {data.full_name}",now()))
+        if data.plan_id:
+            p=db.execute("SELECT * FROM membership_plans WHERE id=? AND is_active=1",(data.plan_id,)).fetchone()
+            if not p: raise HTTPException(400,"Selected plan is not available")
+            start=date.fromisoformat(data.joining_date)
+            expiry = date.fromisoformat(data.expiry_date) if data.expiry_date else add_months(start, p["duration_months"])
+            if expiry < start: raise HTTPException(400,"Expiry date cannot be before joining date")
+            price = float(p["price"]) if data.total_price is None else float(data.total_price)
+            mc=db.execute("INSERT INTO memberships(member_id,plan_id,start_date,expiry_date,total_price,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(member_row_id,p["id"],start.isoformat(),expiry.isoformat(),price,now(),now()))
+            if data.paid_now and data.paid_now > 0:
+                if data.paid_now > price: raise HTTPException(400,f"Payment ₹{data.paid_now:.0f} exceeds total fee ₹{price:.0f}")
+                if not data.payment_method: raise HTTPException(400,"Select a payment method for the initial payment")
+                db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,created_by,created_at) VALUES(?,?,?,?,?,?,?)",(member_row_id,mc.lastrowid,float(data.paid_now),today().isoformat(),data.payment_method,user["sub"],now()))
+                db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"payment","member",member_row_id,f"Initial payment ₹{data.paid_now:.0f} from {data.full_name}",now()))
+        db.commit()
+        out=member_view(db,db.execute("SELECT * FROM members WHERE id=?",(member_row_id,)).fetchone())
+        return out
+    except HTTPException:
+        db.rollback(); raise
+    except Exception as e:
+        db.rollback(); raise HTTPException(400, f"Could not create member: {e}")
+    finally:
+        db.close()
 @api.get("/members/{member_id}")
 def get_member(member_id:int,user=Depends(auth)):
     db=conn(); m=db.execute("SELECT * FROM members WHERE id=?",(member_id,)).fetchone()
@@ -137,7 +172,7 @@ def create_plan(data:PlanIn,user=Depends(auth)): db=conn(); c=db.execute("INSERT
 def add_membership(member_id:int,data:MembershipIn,user=Depends(auth)):
     db=conn(); p=db.execute("SELECT * FROM membership_plans WHERE id=?",(data.plan_id,)).fetchone()
     if not p: raise HTTPException(404,"Plan not found")
-    start=date.fromisoformat(data.start_date); expiry=start + timedelta(days=round(365.25*p["duration_months"]/12)); price=p["price"] if data.total_price is None else data.total_price
+    start=date.fromisoformat(data.start_date); expiry=add_months(start, p["duration_months"]); price=p["price"] if data.total_price is None else data.total_price
     c=db.execute("INSERT INTO memberships(member_id,plan_id,start_date,expiry_date,total_price,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(member_id,p["id"],start.isoformat(),expiry.isoformat(),price,now(),now())); db.commit(); x=dict(db.execute("SELECT * FROM memberships WHERE id=?",(c.lastrowid,)).fetchone()); db.close(); return x
 @api.post("/members/{member_id}/payments")
 def add_payment(member_id:int,data:PaymentIn,user=Depends(auth)):

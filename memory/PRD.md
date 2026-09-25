@@ -24,6 +24,11 @@ Admin login/logout, protected dashboard, members, membership plans, historical m
 - Added JWT auth with bcrypt, protected endpoints, server-side logout revocation, and secure input validation for payments and membership dates.
 - Independently regression-tested backend and mobile flows; no mocked APIs are used.
 
+## Implemented — 2026-09-25
+- Extended "Add Member" form: plan dropdown (from DB), auto-prefilled fee (editable), auto-calculated expiry using calendar month math (editable override), optional initial "Paid now" + method (Cash/UPI/Card/Bank Transfer/Other).
+- Backend `POST /api/members` now creates member + membership + optional payment atomically inside a transaction with server-side validation (plan active, expiry ≥ joining, paid_now ≤ total fee).
+- Switched membership expiry calculation to calendar-accurate `add_months` on both create-member and add-membership endpoints.
+
 ## Prioritized backlog
 - P0: Keep production secrets and admin credentials outside committed development configuration.
 - P1: Add member edit/detail screen with complete payment history and membership renewal actions.
