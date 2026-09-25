@@ -176,9 +176,15 @@ def add_membership(member_id:int,data:MembershipIn,user=Depends(auth)):
     c=db.execute("INSERT INTO memberships(member_id,plan_id,start_date,expiry_date,total_price,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(member_id,p["id"],start.isoformat(),expiry.isoformat(),price,now(),now())); db.commit(); x=dict(db.execute("SELECT * FROM memberships WHERE id=?",(c.lastrowid,)).fetchone()); db.close(); return x
 @api.post("/members/{member_id}/payments")
 def add_payment(member_id:int,data:PaymentIn,user=Depends(auth)):
+    try: pdate=date.fromisoformat(data.payment_date)
+    except ValueError: raise HTTPException(400,"Invalid payment date")
+    if pdate>today(): raise HTTPException(400,"Payment date cannot be in the future")
     db=conn(); m=member_view(db,db.execute("SELECT * FROM members WHERE id=?",(member_id,)).fetchone())
-    if data.amount>m["pending"]: raise HTTPException(400,f"Payment exceeds pending amount ₹{m['pending']:.0f}")
-    c=db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,transaction_reference,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(member_id,m.get("membership_id"),*data.model_dump().values(),user["sub"],now())); db.commit(); x=dict(db.execute("SELECT * FROM payments WHERE id=?",(c.lastrowid,)).fetchone()); db.close(); return x
+    if not m.get("membership_id"): db.close(); raise HTTPException(400,"Member has no active membership")
+    if data.amount>m["pending"]: db.close(); raise HTTPException(400,f"Payment exceeds pending amount ₹{m['pending']:.0f}")
+    c=db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,transaction_reference,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(member_id,m["membership_id"],*data.model_dump().values(),user["sub"],now()))
+    db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"payment","member",member_id,f"Payment ₹{data.amount:.0f} from {m['full_name']} ({data.payment_method})",now()))
+    db.commit(); x=dict(db.execute("SELECT * FROM payments WHERE id=?",(c.lastrowid,)).fetchone()); db.close(); return x
 @api.get("/expiring")
 def expiring(filter:str="30",user=Depends(auth)):
     db=conn(); data=[member_view(db,m) for m in rows(db.execute("SELECT * FROM members WHERE archived=0"))]; db.close(); return [m for m in data if (filter=="expired" and m["status"]=="EXPIRED") or (filter in ("7","30") and m["days_remaining"] is not None and 0<=m["days_remaining"]<=int(filter))]
