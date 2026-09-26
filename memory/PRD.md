@@ -28,7 +28,8 @@ Admin login/logout, protected dashboard, members, membership plans, historical m
 - Extended "Add Member" form: plan dropdown (from DB), auto-prefilled fee (editable), auto-calculated expiry using calendar month math (editable override), optional initial "Paid now" + method (Cash/UPI/Card/Bank Transfer/Other).
 - Backend `POST /api/members` now creates member + membership + optional payment atomically inside a transaction with server-side validation (plan active, expiry ≥ joining, paid_now ≤ total fee).
 - Switched membership expiry calculation to calendar-accurate `add_months` on both create-member and add-membership endpoints.
-- Added Member Detail page: tap any row to view full profile, current plan/duration, fee summary (total/paid/pending), status badge, expiry, and complete payment history. Includes Edit member (modal → PUT), Delete member (confirm dialog → archive), and a placeholder Record Payment button. Mobile-friendly layout.
+- Added Member Detail page: tap any row to view full profile, current plan/duration, fee summary (total/paid/pending), status badge, expiry, and complete payment history. Includes Edit member (modal → PUT), Delete member (confirm dialog → archive), and Record Payment. Mobile-friendly layout.
+- Record Payment upgraded to a smart three-in-one flow: Case 1 (pending only) posts to `/payments`; Cases 2 & 3 (expired / expiring soon, with or without pending) go through new atomic `POST /api/members/{id}/renew` that optionally settles the old membership, creates a new membership row, and optionally applies an initial payment on it. Address field added to Add Member.
 
 ## Prioritized backlog
 - P0: Keep production secrets and admin credentials outside committed development configuration.
