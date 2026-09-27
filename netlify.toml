@@ -1,0 +1,4 @@
+[build]
+  base = "frontend"
+  command = "craco build"
+  publish = "frontend/build"
