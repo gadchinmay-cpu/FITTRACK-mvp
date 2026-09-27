@@ -81,6 +81,8 @@ class MemberCreateIn(MemberIn): plan_id: Optional[int]=None; total_price: Option
 class PlanIn(BaseModel): name: str; duration_months: int = Field(gt=0, le=60); price: float = Field(ge=0); description: Optional[str]=None; is_active: bool=True
 class MembershipIn(BaseModel): plan_id: int; start_date: str; total_price: Optional[float]=None
 class PaymentIn(BaseModel): amount: float = Field(gt=0); payment_date: str; payment_method: str; transaction_reference: Optional[str]=None; notes: Optional[str]=None
+class PaymentSubIn(BaseModel): amount: float = Field(gt=0); payment_method: str; payment_date: str; notes: Optional[str]=None
+class RenewIn(BaseModel): plan_id: int; start_date: str; expiry_date: Optional[str]=None; total_price: Optional[float]=Field(default=None, ge=0); pending_settlement: Optional[PaymentSubIn]=None; initial_payment: Optional[PaymentSubIn]=None
 
 def auth(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "): raise HTTPException(401, "Authentication required")
@@ -185,6 +187,42 @@ def add_payment(member_id:int,data:PaymentIn,user=Depends(auth)):
     c=db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,transaction_reference,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(member_id,m["membership_id"],*data.model_dump().values(),user["sub"],now()))
     db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"payment","member",member_id,f"Payment ₹{data.amount:.0f} from {m['full_name']} ({data.payment_method})",now()))
     db.commit(); x=dict(db.execute("SELECT * FROM payments WHERE id=?",(c.lastrowid,)).fetchone()); db.close(); return x
+@api.post("/members/{member_id}/renew")
+def renew_member(member_id:int, data:RenewIn, user=Depends(auth)):
+    db=conn()
+    try:
+        m_row=db.execute("SELECT * FROM members WHERE id=? AND archived=0",(member_id,)).fetchone()
+        if not m_row: raise HTTPException(404,"Member not found")
+        current=member_view(db,m_row)
+        p=db.execute("SELECT * FROM membership_plans WHERE id=? AND is_active=1",(data.plan_id,)).fetchone()
+        if not p: raise HTTPException(400,"Selected plan is not available")
+        start=date.fromisoformat(data.start_date)
+        expiry=date.fromisoformat(data.expiry_date) if data.expiry_date else add_months(start, p["duration_months"])
+        if expiry<start: raise HTTPException(400,"Expiry date cannot be before start date")
+        price=float(p["price"]) if data.total_price is None else float(data.total_price)
+        if data.pending_settlement:
+            ps=data.pending_settlement
+            if not current.get("membership_id"): raise HTTPException(400,"No current membership to settle")
+            if date.fromisoformat(ps.payment_date)>today(): raise HTTPException(400,"Payment date cannot be in the future")
+            if ps.amount>current["pending"]: raise HTTPException(400,f"Settlement exceeds pending ₹{current['pending']:.0f}")
+            db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",(member_id,current["membership_id"],ps.amount,ps.payment_date,ps.payment_method,ps.notes,user["sub"],now()))
+            db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"payment","member",member_id,f"Settled ₹{ps.amount:.0f} pending from {current['full_name']} ({ps.payment_method})",now()))
+        mc=db.execute("INSERT INTO memberships(member_id,plan_id,start_date,expiry_date,total_price,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",(member_id,p["id"],start.isoformat(),expiry.isoformat(),price,now(),now()))
+        db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"renewed","member",member_id,f"Renewed {current['full_name']} · {p['name']} till {expiry.isoformat()}",now()))
+        if data.initial_payment:
+            ip=data.initial_payment
+            if date.fromisoformat(ip.payment_date)>today(): raise HTTPException(400,"Payment date cannot be in the future")
+            if ip.amount>price: raise HTTPException(400,f"Payment ₹{ip.amount:.0f} exceeds new fee ₹{price:.0f}")
+            db.execute("INSERT INTO payments(member_id,membership_id,amount,payment_date,payment_method,notes,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)",(member_id,mc.lastrowid,ip.amount,ip.payment_date,ip.payment_method,ip.notes,user["sub"],now()))
+            db.execute("INSERT INTO activity_logs(user_id,action,entity_type,entity_id,description,created_at) VALUES(?,?,?,?,?,?)",(user["sub"],"payment","member",member_id,f"Payment ₹{ip.amount:.0f} from {current['full_name']} ({ip.payment_method})",now()))
+        db.commit()
+        return member_view(db,db.execute("SELECT * FROM members WHERE id=?",(member_id,)).fetchone())
+    except HTTPException:
+        db.rollback(); raise
+    except Exception as e:
+        db.rollback(); raise HTTPException(400,f"Could not renew: {e}")
+    finally:
+        db.close()
 @api.get("/expiring")
 def expiring(filter:str="30",user=Depends(auth)):
     db=conn(); data=[member_view(db,m) for m in rows(db.execute("SELECT * FROM members WHERE archived=0"))]; db.close(); return [m for m in data if (filter=="expired" and m["status"]=="EXPIRED") or (filter in ("7","30") and m["days_remaining"] is not None and 0<=m["days_remaining"]<=int(filter))]
