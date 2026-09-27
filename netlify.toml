@@ -1,4 +1,4 @@
 [build]
-  base = "frontend"
-  command = "craco build"
-  publish = "frontend/build"
+base = "frontend"
+command = "CI=false craco build"
+publish = "build"
